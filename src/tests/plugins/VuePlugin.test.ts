@@ -1,6 +1,10 @@
-import { VuePlugin, RawPlugin } from "../../index";
+import { VuePlugin, CSSPlugin } from "../../index";
 import { createEnv } from "../stubs/TestEnvironment";
 import { should } from "fuse-test-runner";
+import * as path from "path";
+import * as appRoot from "app-root-path";
+import * as fs from "fs";
+import * as fsExtra from "fs-extra";
 
 const vueFileSource = `<template>
     <div>
@@ -10,6 +14,8 @@ const vueFileSource = `<template>
 </template>
 
 <script>
+    import './qwe'
+    import './asd.css'
     export default {
         name: 'app',
         data () {
@@ -19,6 +25,12 @@ const vueFileSource = `<template>
         }
     }
 </script>
+
+<style>
+    body {
+        background-color: #C0FFEE;
+    }
+</style>
 `;
 
 const vueBabelFileSource = `<template>
@@ -41,20 +53,41 @@ const vueBabelFileSource = `<template>
 </script>
 `;
 
+let tmp, shouldExist;
+
+const makeTestFolder = () => {
+    tmp = path.join(appRoot.path, ".fusebox", "vue-test", new Date().getTime().toString());
+    fsExtra.ensureDirSync(tmp);
+    shouldExist = (name) => {
+        const fname = path.join(tmp, name);;
+        should(fs.existsSync(fname)).equal(true);
+        return fs.readFileSync(fname).toString();
+    };
+};
+
 export class VuePluginTest {
     "Should return compiled TS vue code with render functions"() {
+        // makeTestFolder();
         return createEnv({
             project: {
                 files: {
-                    "app.vue": vueFileSource
+                    "qwe.js": "exports.bar = 1;",
+                    "app.vue": vueFileSource,
+                    "asd.css": "body { color: pink; }"
                 },
                 plugins: [
-                    [ VuePlugin() ]
+                    [ VuePlugin({ css: { outFile: (file) => `${tmp}/${file}`, } }) ],
+                    [ CSSPlugin() ]
                 ],
-                instructions: "app.vue",
+                instructions: "app.vue *.js *.css",
             },
         }).then((result) => {
             const component = result.project.FuseBox.import('./app.vue');
+
+            // shouldExist("app.css");
+            const js = result.projectContents.toString();
+            console.log(js)
+            // should(js).findString(`require("fuse-box-css")("vue-styles.css");`);
 
             // //test for render functions
             should( component.render ).notEqual( undefined );
@@ -76,6 +109,7 @@ export class VuePluginTest {
     }
 
     "Should return compiled Babel vue code with render functions"() {
+        return null
         return createEnv({
             project: {
                 files: {

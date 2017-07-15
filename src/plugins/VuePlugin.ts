@@ -1,11 +1,20 @@
 import { File } from "../core/File";
 import { WorkFlowContext } from "../core/WorkflowContext";
 import { Plugin } from "../core/WorkflowContext";
+import { IPathInformation } from "../core/PathMaster";
+// import { Concat, ensureUserPath, write, isStylesheetExtension } from "../../Utils";
+// import { utils } from "realm-utils";
 import * as fs from "fs";
 import * as path from "path";
 
+export interface VuePluginCSSOptions {
+    outFile?: { (file: string): string } | string;
+}
+
 export interface VuePluginOptions {
+    lang?: string, // ts, babel
     babel?: any,
+    css?: VuePluginCSSOptions,
 }
 
 let vueCompiler;
@@ -54,7 +63,9 @@ export class VuePluginClass implements Plugin {
             let templateLang = (result.template.attrs) ? result.template.attrs.lang : null;
             return compileTemplateContent(context, templateLang, result.template.content).then(html => {
 
-                file.contents = compileScript(this.options, context, html, result.script)
+                let cssFile = buildCSSFile(this.options, file, result.styles)
+
+                file.contents = compileScript(this.options, context, html, cssFile, result.script)
                 file.analysis.parseUsingAcorn();
                 file.analysis.analyze();
 
@@ -68,6 +79,16 @@ export class VuePluginClass implements Plugin {
             });
         }
     }
+
+    public transformGroup(group: File) {
+        let contents = [];
+        group.subFiles.forEach(file => {
+            contents.push(file.contents);
+        });
+        let safeContents = JSON.stringify(contents.join("\n"));
+        group.contents = `require("fuse-box-css")("${group.info.fuseBoxPath}", ${safeContents});`;
+    }
+
 };
 
 function toFunction (code) {
@@ -91,27 +112,31 @@ function compileTemplateContent (context: any, engine: string, content: string) 
         });
     });
 }
-function compileScript(options, context, html, script) : string {
-    let lang = script.attrs.lang;
-    if (lang === 'babel') {
-        return compileBabel(options, context, html, script);
-    } else {
-        return compileTypeScript(options, context, html, script);
-    }
-}
-function compileTypeScript(options, context, html, script) : string {
-    if (!typescriptTranspiler) {
-        typescriptTranspiler = require("typescript");
+function compileScript(options, context, html, cssFile, script) : string {
+    let lang = script.attrs.lang || options.lang || 'ts';
+    let transpiler = {
+        babel: compileBabel,
+        ts: compileTypeScript,
+    }[lang];
+    if (transpiler === undefined){
+        console.log(`Unsupported lang "${lang}"`)
+        return ''
     }
     try {
-        const jsTranspiled = typescriptTranspiler.transpileModule(script.content, context.getTypeScriptConfig());
-        return reduceVueToScript(jsTranspiled.outputText, html)
+        let jsTranspiled = transpiler(options, context, script);
+        return reduceVueToScript(jsTranspiled, html, cssFile);
     } catch (err) {
-        console.log(err)
+        console.log(err);
     }
     return ''
 }
-function compileBabel(options, context, html, script) : string {
+function compileTypeScript(options, context, script) : string {
+    if (!typescriptTranspiler) {
+        typescriptTranspiler = require("typescript");
+    }
+    return typescriptTranspiler.transpileModule(script.content, context.getTypeScriptConfig()).outputText;
+}
+function compileBabel(options, context, script) : string {
     if (!babelCore) {
         babelCore = require("babel-core");
         if (options.babel !== undefined) {
@@ -128,18 +153,26 @@ function compileBabel(options, context, html, script) : string {
             babelConfig = { plugins: ['transform-es2015-modules-commonjs'] }
         }
     }
-    try {
-        let jsTranspiled = babelCore.transform(script.content, babelConfig);
-        return reduceVueToScript(jsTranspiled.code, html)
-    } catch (err) {
-        console.log(err)
-    }
-    return '';
+    return babelCore.transform(script.content, babelConfig).code;
 }
-function reduceVueToScript(jsContent, html) : string {
+function buildCSSFile(options: VuePluginOptions, vueFile : File, styles) : File {
+    let info = <IPathInformation>{};
+    info.absPath = vueFile.absPath + ".css";
+    let cssFile = new File(vueFile.context, info);
+    cssFile.relativePath = vueFile.relativePath + '.css';
+    cssFile.contents = styles.map(style => style.content).join("\n");
+    cssFile.isLoaded = true;
+    cssFile.tryPlugins();
+    return cssFile;
+}
+function reduceVueToScript(jsContent : string, html : string, cssFile : File) : string {
     const compiled = vueCompiler.compile(html);
+    console.log(cssFile.absPath)
+    console.log(cssFile.relativePath)
+    console.log(jsContent)
     return `var _p = {};
 var _v = function(exports){${jsContent}
+// require('${cssFile.relativePath}');
 };
 _p.render = ` + toFunction(compiled.render) + `
 _p.staticRenderFns = [ ` + compiled.staticRenderFns.map(toFunction).join(',') + ` ];
